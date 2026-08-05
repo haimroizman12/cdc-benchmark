@@ -11,3 +11,6 @@ venv/
 
 # Env
 .env
+
+# Airbyte runtime connection id
+airbyte/.connection_id
