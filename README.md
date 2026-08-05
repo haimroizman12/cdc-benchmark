@@ -5,6 +5,9 @@ changes from Postgres (source) to SQL Server (target). One containerized Python
 harness generates a tunable change stream into Postgres, times every row against a
 single host clock (no cross-DB skew), and renders a comparison table.
 
+For a step-by-step tour of the code (a change in Postgres → the WAL → the CDC tool →
+SQL Server → the latency calculation), see [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+
 ## Quick start
 
 ```bash
