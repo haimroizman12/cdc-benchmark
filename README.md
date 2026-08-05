@@ -73,30 +73,50 @@ is the cost of the batch model, not a defect.
 ## Measured results
 
 Both tools replicating `INSERT`s Postgres→MSSQL on the same rig (arm64 Mac, MSSQL
-under amd64 emulation). `selftest` writes straight to MSSQL and is the **measurement
-floor** — it isolates the emulation + poll overhead that sits under *both* tools.
+under amd64 emulation), produced by a single `make demo` run — **both delivered 100%
+of rows**:
 
-| Metric | debezium | airbyte | selftest (floor) |
-|---|---|---|---|
-| p50 latency (ms) | 555 | 15,788 | 28 |
-| p95 latency (ms) | 954 | 37,663 | 51 |
-| p99 latency (ms) | 1,021 | 40,077 | 53 |
-| max latency (ms) | 1,066 | 40,694 | 71 |
-| throughput (rows/s) | 44.5 | 19.3 | 69.9 |
-| completeness (%) | 100 | 100 | 100 |
+| Metric | debezium | airbyte |
+|---|---|---|
+| p50 latency (ms) | 557 | 15,765 |
+| p95 latency (ms) | 1,785 | 292,461 |
+| p99 latency (ms) | 2,590 | 294,846 |
+| max latency (ms) | 2,785 | 295,461 |
+| throughput (rows/s) | 44.8 | 19.3 |
+| completeness (%) | 100 | 100 |
 
 Run parameters: Debezium `RATE=50 DURATION=20`, Airbyte `RATE=20 DURATION=60
-GRACE=180`, both `MIX=100/0/0`. **Both delivered 100% of rows.** The headline is the
-latency axis: Debezium's p50 is **~0.55 s**; Airbyte's is **~16 s** — roughly a **28×**
-gap, and at the tail (p95) ~40×. That gap is the batch-vs-stream model, not a defect in
-either tool. (Airbyte's lower throughput number reflects its lower offered rate here,
-not a keep-up failure — it drained its whole backlog to 100%.)
+GRACE=300`, both `MIX=100/0/0`. (Separately, `make selftest` — the harness writing
+straight to MSSQL — is the **measurement floor**: p50 ~28 ms, isolating the emulation +
+poll overhead that sits under *both* tools.)
+
+**Read the two tools' distributions differently — that difference IS the result:**
+
+- **Debezium streams**, so its distribution is *tight*: p50 0.56 s and **every** row
+  landed within ~2.8 s. Freshness is uniform.
+- **Airbyte batches**, so its distribution is *bimodal*: ~76% of rows arrived within a
+  minute (p50 ~16 s), but **~24% waited 2–5 minutes** — they missed a sync window and
+  sat until a later batch swept them (there is a clean gap at 60–120 s: rows either make
+  an early sync or wait for a late one). That is why p50 is ~16 s but p95 is ~290 s.
+
+The headline is the latency axis: Debezium's typical latency is **sub-second**;
+Airbyte's is **seconds at best and minutes at the tail**. Even Airbyte's *best case*
+(p50) is ~28× Debezium; its tail is 100–500×. That is the batch-vs-stream model, not a
+defect in either tool.
+
+**On completeness vs. drain window (a finding in itself):** Airbyte's completeness is
+sensitive to how long you let it drain. At `GRACE=180` an earlier run captured only
+~75% within the window and showed a *smaller* tail; at `GRACE=300` it reaches 100% but
+the recovered tail rows carry multi-minute latencies. A streaming tool has no such
+knob — Debezium is 100% with a tight tail regardless. The Airbyte throughput number
+(19.3 rows/s) reflects its lower offered rate here, not a keep-up failure.
 
 ## Recommendation
 
 **For change-data replication where freshness matters, use Debezium.** It delivered
-every row within ~1 second at the p99, versus Airbyte's tens of seconds, and it keeps
-up with a continuous stream rather than moving data in periodic batches.
+every row within ~3 seconds (100% under 2.8 s), versus Airbyte's ~16 s typical and a
+2–5 minute tail, and it keeps up with a continuous stream rather than moving data in
+periodic batches with a completeness-vs-drain-window trade-off.
 
 Weigh it against setup cost:
 

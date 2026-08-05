@@ -45,6 +45,10 @@ def _raw(method, url, body=None, headers=None):
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         raise SystemExit(f"{method} {url} -> {e.code}: {e.read().decode()[:600]}")
+    except urllib.error.URLError as e:
+        # Cluster/connection went away (e.g. the sync loop still firing while
+        # `airbyte-down` uninstalls). Exit cleanly instead of a stack trace.
+        raise SystemExit(f"{method} {url} -> unreachable: {e.reason}")
 
 
 def _token():

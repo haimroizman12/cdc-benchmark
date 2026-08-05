@@ -143,7 +143,7 @@ demo:
 	$(MAKE) debezium-bench RATE=50 DURATION=20 MIX=100/0/0
 	$(MAKE) debezium-down
 	$(MAKE) airbyte-up
-	$(MAKE) airbyte-bench RATE=20 DURATION=60 MIX=100/0/0 GRACE=180
+	$(MAKE) airbyte-bench RATE=20 DURATION=60 MIX=100/0/0 GRACE=300
 	$(MAKE) airbyte-down
 	$(MAKE) report
 
