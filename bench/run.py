@@ -112,15 +112,20 @@ def main() -> int:
     t.start()
     start = time.time()
     generated = gen.run_for(args.duration)
+    # Throughput is rows/s over the LOAD window only — the grace drain must not be in
+    # the denominator, or tools run with different --grace/--duration get unequal
+    # penalties and the number stops meaning "does it keep up with the offered rate".
+    load_duration = time.time() - start
     # Stop the background poller and join before draining: the fetch connection is a
     # single pymssql connection and must never be touched by two threads at once.
     stop.set()
     t.join()
     mea.drain(time.time() + args.grace)   # catch the tail on the main thread
-    duration = time.time() - start
 
     lat = [ms for _, ms in mea.samples]
-    summary = metrics.summarize(lat, generated=gen.seq, arrived=len(mea.samples), duration_s=duration)
+    summary = metrics.summarize(
+        lat, generated=gen.seq, arrived=len(mea.samples), duration_s=load_duration
+    )
     summary["tool"] = args.tool
     summary["rate"] = args.rate
     summary["mix"] = args.mix
