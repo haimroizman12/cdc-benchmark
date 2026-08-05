@@ -41,6 +41,12 @@ selftest: bench-build
 	  --tool selftest --rate $(RATE) --duration 10 --mix 100/0/0
 
 debezium-up: up
+	@set -a; . ./.env; set +a; \
+	echo "resetting dbo.source_events to the harness shape (the Airbyte leg, if it ran,"; \
+	echo "leaves an Airbyte-owned table the JDBC sink can't write to — makes demo idempotent)..."; \
+	$(COMPOSE_DB) exec -T mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa \
+	  -P "$$MSSQL_SA_PASSWORD" -C -Q "USE target_db; DROP TABLE IF EXISTS dbo.source_events;"
+	@$(MAKE) mssql-schema
 	$(COMPOSE_DBZ) up -d --build
 	@echo "waiting for Kafka Connect REST..."
 	@until curl -sf localhost:8083/ >/dev/null; do sleep 2; done
@@ -108,7 +114,11 @@ airbyte-up: up airbyte-install
 	$(AB_CREDS); \
 	AIRBYTE_URL=$(AIRBYTE_URL) AIRBYTE_CLIENT_ID=$$cid AIRBYTE_CLIENT_SECRET=$$csec \
 	  AB_SRC_HOST=$$pgip AB_SRC_PORT=5432 AB_DST_HOST=$$msip AB_DST_PORT=1433 \
-	  python airbyte/configure.py setup
+	  python3 airbyte/configure.py setup; \
+	echo "priming one sync so Airbyte CREATES dbo.source_events (it owns the table and"; \
+	echo "only creates it on first sync; the bench's target reset needs it to exist)..."; \
+	AIRBYTE_URL=$(AIRBYTE_URL) AIRBYTE_CLIENT_ID=$$cid AIRBYTE_CLIENT_SECRET=$$csec \
+	  python3 airbyte/configure.py sync
 
 airbyte-down:
 	abctl local uninstall
@@ -120,7 +130,7 @@ airbyte-bench: bench-build
 	@$(AB_CREDS); \
 	( end=$$(( $$(date +%s) + $(DURATION) + $(GRACE) )); while [ $$(date +%s) -lt $$end ]; do \
 	    AIRBYTE_URL=$(AIRBYTE_URL) AIRBYTE_CLIENT_ID=$$cid AIRBYTE_CLIENT_SECRET=$$csec \
-	    python airbyte/configure.py sync; done ) & \
+	    python3 airbyte/configure.py sync; done ) & \
 	docker run --rm --network cdc-bench --env-file .env -e PG_HOST=postgres -e MSSQL_HOST=mssql \
 	  -v $$PWD/results:/app/results cdc-bench \
 	  --tool airbyte --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE)
