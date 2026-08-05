@@ -11,7 +11,7 @@ GRACE ?= 30
 .PHONY: env up down mssql-schema clean bench-build selftest \
 	debezium-up debezium-down debezium-bench \
 	airbyte-install airbyte-up airbyte-down airbyte-bench \
-	report
+	report demo
 env:
 	@test -f .env || cp .env.example .env
 
@@ -124,6 +124,18 @@ airbyte-bench: bench-build
 	docker run --rm --network cdc-bench --env-file .env -e PG_HOST=postgres -e MSSQL_HOST=mssql \
 	  -v $$PWD/results:/app/results cdc-bench \
 	  --tool airbyte --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE)
+
+# End-to-end demo: run BOTH tools one at a time (they need different target-table
+# shapes and must never run simultaneously), then print the comparison table.
+# Airbyte gets a longer grace because its batch tail arrives over many seconds.
+demo:
+	$(MAKE) debezium-up
+	$(MAKE) debezium-bench RATE=50 DURATION=20 MIX=100/0/0
+	$(MAKE) debezium-down
+	$(MAKE) airbyte-up
+	$(MAKE) airbyte-bench RATE=20 DURATION=60 MIX=100/0/0 GRACE=180
+	$(MAKE) airbyte-down
+	$(MAKE) report
 
 # Renders the comparison table from the latest results JSON per tool.
 report: bench-build

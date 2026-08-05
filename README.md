@@ -10,7 +10,8 @@ single host clock (no cross-DB skew), and renders a comparison table.
 ```bash
 cp .env.example .env
 make up                 # postgres + mssql
-make selftest           # sanity check: harness writes straight to MSSQL (~0 latency)
+make selftest           # sanity check: harness writes straight to MSSQL (measurement floor)
+make demo               # run BOTH tools (one at a time) + print the comparison table
 ```
 
 ## Run each tool
@@ -69,6 +70,54 @@ structurally higher-latency. This benchmark compares **latency vs. ease-of-setup
 not streaming-vs-streaming. A multi-second Airbyte number is expected and correct — it
 is the cost of the batch model, not a defect.
 
+## Measured results
+
+Both tools replicating `INSERT`s Postgres→MSSQL on the same rig (arm64 Mac, MSSQL
+under amd64 emulation). `selftest` writes straight to MSSQL and is the **measurement
+floor** — it isolates the emulation + poll overhead that sits under *both* tools.
+
+| Metric | debezium | airbyte | selftest (floor) |
+|---|---|---|---|
+| p50 latency (ms) | 555 | 15,788 | 28 |
+| p95 latency (ms) | 954 | 37,663 | 51 |
+| p99 latency (ms) | 1,021 | 40,077 | 53 |
+| max latency (ms) | 1,066 | 40,694 | 71 |
+| throughput (rows/s) | 44.5 | 19.3 | 69.9 |
+| completeness (%) | 100 | 100 | 100 |
+
+Run parameters: Debezium `RATE=50 DURATION=20`, Airbyte `RATE=20 DURATION=60
+GRACE=180`, both `MIX=100/0/0`. **Both delivered 100% of rows.** The headline is the
+latency axis: Debezium's p50 is **~0.55 s**; Airbyte's is **~16 s** — roughly a **28×**
+gap, and at the tail (p95) ~40×. That gap is the batch-vs-stream model, not a defect in
+either tool. (Airbyte's lower throughput number reflects its lower offered rate here,
+not a keep-up failure — it drained its whole backlog to 100%.)
+
+## Recommendation
+
+**For change-data replication where freshness matters, use Debezium.** It delivered
+every row within ~1 second at the p99, versus Airbyte's tens of seconds, and it keeps
+up with a continuous stream rather than moving data in periodic batches.
+
+Weigh it against setup cost:
+
+- **Debezium** — you run and operate Kafka + Kafka Connect + two connectors (a
+  Postgres source and a JDBC sink), and connector config lives in JSON you version
+  yourself. More moving parts to stand up, but once `make debezium-up` is green it
+  streams continuously and needed **zero** connector-config iteration here.
+- **Airbyte** — one `abctl local install` gives you a UI, a connector catalog, and
+  API-driven config, which is genuinely easier to *reason about*. But getting a
+  Postgres-CDC→MSSQL sync to actually run took real fighting (see Caveats): a heavy
+  kind-cluster install, a networking gap between the cluster and the databases, a
+  certified MSSQL destination that **crashes introspecting an existing table** and so
+  must own its own schema, and a batch model that is structurally 1–2 orders of
+  magnitude slower.
+
+**Pick Debezium when latency is the requirement** (near-real-time dashboards, event
+propagation, cache invalidation). **Consider Airbyte when cadence is measured in
+minutes/hours and you value the managed catalog + UI** over freshness — e.g. nightly
+warehouse loads — and after validating that your specific destination connector is
+healthy for your table types.
+
 ## Caveats (this environment)
 
 - **Host Postgres port is 5442** (`.env`) to avoid a clash with other local Postgres
@@ -79,9 +128,32 @@ is the cost of the batch model, not a defect.
   latency overhead. The comparison stays fair — both tools write to the *same* MSSQL —
   but absolute numbers run higher than on native amd64. The selftest quantifies this
   floor (writing straight to MSSQL still shows tens of ms, not single digits).
-- The official `abctl` installer (`connect.airbyte.com`) has returned Cloudflare 526s;
+
+### Airbyte integration frictions (part of the ease-of-use verdict)
+
+All are handled automatically by the `airbyte-*` make targets; documented here because
+they *are* the setup-cost half of the comparison:
+
+- **abctl installer CDN** (`connect.airbyte.com`) has returned Cloudflare 526s;
   `make airbyte-install` falls back to the pinned GitHub release automatically.
+- **Ingress port** defaults to 8010 (`AIRBYTE_PORT`) because 8000 was taken locally.
+- **Cluster networking** — Airbyte's connector pods run inside abctl's kind Kubernetes
+  cluster, a *separate* docker network from the DB rig, so the compose service names
+  (`postgres`/`mssql`) don't resolve there (symptom: JDBC `08001`). `airbyte-up`
+  connects the DB containers to the kind network and passes their kind-network IPs.
+- **`destination-mssql` 2.2.20 cannot own an existing table** — it crashes
+  introspecting columns whose types aren't in its `MssqlType` enum (`FLOAT`,
+  `NVARCHAR`: "No enum constant …"). The connector must **create** its target table,
+  so `airbyte-up` drops `dbo.source_events` first and lets Airbyte own it. For this
+  reason `written_at` is a `BIGINT` (epoch micros), not `DOUBLE PRECISION`.
+- **Two tools need different target-table shapes** (harness-created for Debezium,
+  Airbyte-created for Airbyte), so `make up` alone does not restore a clean rig between
+  tools — always switch via the tool's own `-up` target (as `make demo` does).
+- **CDC `initial_waiting_seconds` must be ≥ 120** or the source watchdog times out.
+- **Job status `incomplete` is transient** — Airbyte auto-retries a failed attempt and
+  can still reach `succeeded`, so the sync driver treats only
+  `succeeded`/`failed`/`cancelled` as terminal.
 
 ## Commands
 
-`make up | down | selftest | debezium-up/-bench/-down | airbyte-up/-bench/-down | report | clean`
+`make up | down | selftest | demo | debezium-up/-bench/-down | airbyte-up/-bench/-down | report | clean`
