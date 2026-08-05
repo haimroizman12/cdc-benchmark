@@ -1,0 +1,13 @@
+# Results output
+results/
+*.raw.csv
+*.raw.jsonl
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env
+.env
