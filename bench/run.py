@@ -16,7 +16,7 @@ def _pg_writers(conn):
     def ins(seq, written_at, payload):
         cur.execute(
             "INSERT INTO source_events (seq, written_at, payload) VALUES (%s,%s,%s)",
-            (seq, written_at, payload),
+            (seq, int(written_at * 1_000_000), payload),  # store epoch micros (BIGINT column)
         )
         conn.commit()
 
@@ -37,7 +37,7 @@ def _mssql_writers(conn):
     def ins(seq, written_at, payload):
         cur.execute(
             "INSERT INTO dbo.source_events (id, seq, written_at, payload) VALUES (%s,%s,%s,%s)",
-            (seq, seq, written_at, payload),
+            (seq, seq, int(written_at * 1_000_000), payload),  # epoch micros (BIGINT column)
         )
         conn.commit()
 

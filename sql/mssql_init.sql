@@ -8,7 +8,7 @@ IF OBJECT_ID('dbo.source_events','U') IS NULL
 CREATE TABLE dbo.source_events (
     id          BIGINT NOT NULL PRIMARY KEY,
     seq         BIGINT NOT NULL,
-    written_at  FLOAT  NOT NULL,
+    written_at  BIGINT NOT NULL,
     payload     NVARCHAR(MAX) NULL
 );
 GO
