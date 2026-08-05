@@ -1,0 +1,15 @@
+{
+  "name": "pg-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "cdc",
+    "database.password": "cdc_pw",
+    "database.dbname": "source_db",
+    "topic.prefix": "cdc",
+    "plugin.name": "pgoutput",
+    "table.include.list": "public.source_events",
+    "tombstones.on.delete": "false"
+  }
+}

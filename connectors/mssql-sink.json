@@ -1,0 +1,16 @@
+{
+  "name": "mssql-sink",
+  "config": {
+    "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+    "topics": "cdc.public.source_events",
+    "connection.url": "jdbc:sqlserver://mssql:1433;databaseName=target_db;encrypt=false",
+    "connection.username": "sa",
+    "connection.password": "Cdc_Str0ng_Pw!",
+    "insert.mode": "upsert",
+    "primary.key.mode": "record_key",
+    "primary.key.fields": "id",
+    "delete.enabled": "true",
+    "schema.evolution": "none",
+    "table.name.format": "dbo.source_events"
+  }
+}
