@@ -7,6 +7,7 @@ DURATION ?= 60
 MIX ?= 70/20/10
 SEED_ROWS ?= 0
 GRACE ?= 30
+BATCH ?= 1
 
 .PHONY: env up down mssql-schema clean bench-build selftest \
 	debezium-up debezium-down debezium-bench \
@@ -38,7 +39,7 @@ bench-build:
 selftest: bench-build
 	docker run --rm --network cdc-bench --env-file .env -e PG_HOST=postgres -e MSSQL_HOST=mssql \
 	  -v $$PWD/results:/app/results cdc-bench \
-	  --tool selftest --rate $(RATE) --duration 10 --mix 100/0/0
+	  --tool selftest --rate $(RATE) --duration 10 --mix 100/0/0 --batch $(BATCH)
 
 debezium-up: up
 	@set -a; . ./.env; set +a; \
@@ -62,7 +63,7 @@ debezium-down:
 debezium-bench: bench-build
 	docker run --rm --network cdc-bench --env-file .env -e PG_HOST=postgres -e MSSQL_HOST=mssql \
 	  -v $$PWD/results:/app/results cdc-bench \
-	  --tool debezium --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE)
+	  --tool debezium --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE) --batch $(BATCH)
 
 # Installs abctl. Prefers the official one-line installer; if it is unreachable
 # (it has returned Cloudflare 526s), falls back to the pinned GitHub release.
@@ -133,7 +134,7 @@ airbyte-bench: bench-build
 	    python3 airbyte/configure.py sync; done ) & \
 	docker run --rm --network cdc-bench --env-file .env -e PG_HOST=postgres -e MSSQL_HOST=mssql \
 	  -v $$PWD/results:/app/results cdc-bench \
-	  --tool airbyte --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE)
+	  --tool airbyte --rate $(RATE) --duration $(DURATION) --mix $(MIX) --seed-rows $(SEED_ROWS) --grace $(GRACE) --batch $(BATCH)
 
 # End-to-end demo: run BOTH tools one at a time (they need different target-table
 # shapes and must never run simultaneously), then print the comparison table.

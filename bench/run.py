@@ -10,46 +10,67 @@ import time
 from bench import db, loadgen, measure, metrics
 
 
-def _pg_writers(conn):
+def _batched_writers(conn, written_at, batch, ins_sql, upd_sql, del_sql, ins_row):
+    """Buffer ops and commit once per `batch` (batch=1 == commit per op). written_at
+    for each inserted seq is stamped at COMMIT time — a row is only visible to CDC
+    after its transaction commits, so commit-time is the honest T0 for latency."""
     cur = conn.cursor()
+    pending: list[int] = []   # inserted seqs awaiting a commit stamp
+    n = [0]                   # ops accumulated in the current transaction
 
-    def ins(seq, written_at, payload):
-        cur.execute(
-            "INSERT INTO source_events (seq, written_at, payload) VALUES (%s,%s,%s)",
-            (seq, int(written_at * 1_000_000), payload),  # store epoch micros (BIGINT column)
-        )
-        conn.commit()
+    def _flush(force: bool = False) -> None:
+        if n[0] >= batch or (force and n[0] > 0):
+            # Stamp written_at just BEFORE commit so a row's timestamp is always set
+            # before it can become visible to a reader (avoids a race where a poller on
+            # the same DB — selftest — reads a committed row before it's stamped and
+            # drops it). Commit takes ~ms, so this is commit-time within noise.
+            t = time.time()
+            for s in pending:
+                written_at[s] = t
+            conn.commit()
+            pending.clear()
+            n[0] = 0
+
+    def ins(seq, payload):
+        cur.execute(ins_sql, ins_row(seq, payload))
+        pending.append(seq)
+        n[0] += 1
+        _flush()
 
     def upd(seq):
-        cur.execute("UPDATE source_events SET payload = payload || '+' WHERE seq = %s", (seq,))
-        conn.commit()
+        cur.execute(upd_sql, (seq,))
+        n[0] += 1
+        _flush()
 
     def dele(seq):
-        cur.execute("DELETE FROM source_events WHERE seq = %s", (seq,))
-        conn.commit()
+        cur.execute(del_sql, (seq,))
+        n[0] += 1
+        _flush()
 
-    return ins, upd, dele
+    def flush():
+        _flush(force=True)
+
+    return ins, upd, dele, flush
 
 
-def _mssql_writers(conn):
-    cur = conn.cursor()
+def _pg_writers(conn, written_at, batch):
+    return _batched_writers(
+        conn, written_at, batch,
+        "INSERT INTO source_events (seq, written_at, payload) VALUES (%s,%s,%s)",
+        "UPDATE source_events SET payload = payload || '+' WHERE seq = %s",
+        "DELETE FROM source_events WHERE seq = %s",
+        lambda seq, payload: (seq, int(time.time() * 1_000_000), payload),
+    )
 
-    def ins(seq, written_at, payload):
-        cur.execute(
-            "INSERT INTO dbo.source_events (id, seq, written_at, payload) VALUES (%s,%s,%s,%s)",
-            (seq, seq, int(written_at * 1_000_000), payload),  # epoch micros (BIGINT column)
-        )
-        conn.commit()
 
-    def upd(seq):
-        cur.execute("UPDATE dbo.source_events SET payload = payload + '+' WHERE seq = %s", (seq,))
-        conn.commit()
-
-    def dele(seq):
-        cur.execute("DELETE FROM dbo.source_events WHERE seq = %s", (seq,))
-        conn.commit()
-
-    return ins, upd, dele
+def _mssql_writers(conn, written_at, batch):
+    return _batched_writers(
+        conn, written_at, batch,
+        "INSERT INTO dbo.source_events (id, seq, written_at, payload) VALUES (%s,%s,%s,%s)",
+        "UPDATE dbo.source_events SET payload = payload + '+' WHERE seq = %s",
+        "DELETE FROM dbo.source_events WHERE seq = %s",
+        lambda seq, payload: (seq, seq, int(time.time() * 1_000_000), payload),
+    )
 
 
 def _mssql_fetch(conn):
@@ -118,14 +139,16 @@ def main() -> int:
     ap.add_argument("--seed-rows", type=int, default=0)
     ap.add_argument("--mix", default="70/20/10")
     ap.add_argument("--grace", type=int, default=30)  # extra seconds to let the tail arrive
+    ap.add_argument("--batch", type=int, default=1)  # ops per commit (break the per-row-commit ceiling)
     args = ap.parse_args()
 
     target = db.mssql_connect()
     _reset_target(target)
     fetch = _mssql_fetch(target)
+    written_at: dict[int, float] = {}  # seq -> commit-time epoch seconds; owned by the writers
 
     if args.tool == "selftest":
-        writers = _mssql_writers(db.mssql_connect())
+        writers = _mssql_writers(db.mssql_connect(), written_at, args.batch)
         if args.seed_rows:
             print(f"seeding {args.seed_rows} baseline rows straight into MSSQL...")
             _seed_target_mssql(target, args.seed_rows)
@@ -135,10 +158,10 @@ def main() -> int:
         if args.seed_rows:
             print(f"seeding {args.seed_rows} baseline rows into the Postgres source...")
             _seed_source_pg(source, args.seed_rows)
-        writers = _pg_writers(source)
+        writers = _pg_writers(source, written_at, args.batch)
 
     gen = loadgen.LoadGen(*writers, mix=args.mix, rate=args.rate)
-    mea = measure.Measurer(fetch, gen.written_at)
+    mea = measure.Measurer(fetch, written_at)
     if args.seed_rows:
         # Continue seq numbering above the baseline; let updates/deletes hit the big
         # existing set; make the poller ignore the baseline (it isn't timed).
@@ -192,6 +215,7 @@ def main() -> int:
     summary["rate"] = args.rate
     summary["mix"] = args.mix
     summary["seed_rows"] = args.seed_rows
+    summary["batch"] = args.batch
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     outdir = pathlib.Path("results")

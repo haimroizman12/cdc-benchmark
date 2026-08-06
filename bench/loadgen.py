@@ -11,23 +11,21 @@ class LoadGen:
     MSSQL directly for selftest). Records written_at (host epoch) per inserted seq.
     """
 
-    def __init__(self, write_insert, write_update, write_delete, mix: str, rate: int):
+    def __init__(self, write_insert, write_update, write_delete, flush, mix: str, rate: int):
         self.write_insert = write_insert
         self.write_update = write_update
         self.write_delete = write_delete
+        self.flush = flush
         self.i, self.u, self.d = metrics.parse_mix(mix)
         self.rate = rate
         self.seq = 0
         self.live_ids: list[int] = []
-        self.written_at: dict[int, float] = {}
 
     def _one(self) -> None:
         roll = random.randint(1, 100)
         if roll <= self.i or not self.live_ids:
             self.seq += 1
-            now = time.time()
-            self.written_at[self.seq] = now
-            self.write_insert(self.seq, now, f"payload-{self.seq}")
+            self.write_insert(self.seq, f"payload-{self.seq}")
             self.live_ids.append(self.seq)
         elif roll <= self.i + self.u:
             self.write_update(random.choice(self.live_ids))
@@ -44,4 +42,5 @@ class LoadGen:
             n += 1
             if interval:
                 time.sleep(interval)
+        self.flush()  # commit any partial final batch
         return n
