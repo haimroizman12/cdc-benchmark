@@ -7,6 +7,8 @@ single host clock (no cross-DB skew), and renders a comparison table.
 
 For a step-by-step tour of the code (a change in Postgres → the WAL → the CDC tool →
 SQL Server → the latency calculation), see [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+For the edge/stress runs (large tables, high rate, batched-commit saturation) and the
+cross-regime findings, see [`docs/EXTREME-TESTS.md`](docs/EXTREME-TESTS.md).
 
 ## Quick start
 
