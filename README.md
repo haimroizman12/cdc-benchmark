@@ -47,12 +47,14 @@ All bench targets accept the same knobs (surfaced as make vars):
 
 | var | meaning | default |
 |---|---|---|
-| `RATE` | target changes/sec | 100 |
+| `RATE` | target changes/sec (per-row commits cap the real rate at a few hundred/s; the run's `generated` reports what was actually achieved) | 100 |
 | `DURATION` | seconds of load | 60 |
 | `MIX` | INSERT/UPDATE/DELETE %, must sum to 100 | 70/20/10 |
-| `SEED_ROWS` | rows to preload before timing | 0 |
+| `SEED_ROWS` | baseline rows bulk-loaded into the source **and fully replicated to the target before timing starts**, so the timed load runs against a large *existing* table; latency/completeness are measured on the incremental load only | 0 |
+| `GRACE` | extra seconds after load to let the tail arrive (give batch/Airbyte much more) | 30 |
 
 Example soak: `make debezium-bench RATE=200 DURATION=3600 MIX=70/20/10`.
+Example large-table edge test: `make debezium-bench RATE=1000 DURATION=120 SEED_ROWS=100000`.
 
 ## What the numbers mean
 

@@ -77,6 +77,39 @@ def _reset_source(conn) -> None:
     conn.commit()
 
 
+def _seed_source_pg(conn, n: int) -> None:
+    """Bulk-load n baseline rows into the Postgres source (seq 1..n) via COPY, so the
+    timed load runs against a large PRE-EXISTING table. These rows are not measured."""
+    import io
+
+    now_us = int(time.time() * 1_000_000)
+    buf = io.StringIO()
+    for s in range(1, n + 1):
+        buf.write(f"{s}\t{now_us}\tseed-{s}\n")
+    buf.seek(0)
+    cur = conn.cursor()
+    cur.copy_from(buf, "source_events", columns=("seq", "written_at", "payload"))
+    conn.commit()
+
+
+def _seed_target_mssql(conn, n: int) -> None:
+    """Bulk-load n baseline rows straight into the MSSQL target (selftest only)."""
+    now_us = int(time.time() * 1_000_000)
+    cur = conn.cursor()
+    rows = [(s, s, now_us, f"seed-{s}") for s in range(1, n + 1)]
+    cur.executemany(
+        "INSERT INTO dbo.source_events (id, seq, written_at, payload) VALUES (%s,%s,%s,%s)",
+        rows,
+    )
+    conn.commit()
+
+
+def _target_count(conn) -> int:
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM dbo.source_events")
+    return cur.fetchone()[0]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tool", required=True)  # debezium | airbyte | selftest
@@ -93,13 +126,40 @@ def main() -> int:
 
     if args.tool == "selftest":
         writers = _mssql_writers(db.mssql_connect())
+        if args.seed_rows:
+            print(f"seeding {args.seed_rows} baseline rows straight into MSSQL...")
+            _seed_target_mssql(target, args.seed_rows)
     else:
         source = db.pg_connect()
         _reset_source(source)
+        if args.seed_rows:
+            print(f"seeding {args.seed_rows} baseline rows into the Postgres source...")
+            _seed_source_pg(source, args.seed_rows)
         writers = _pg_writers(source)
 
     gen = loadgen.LoadGen(*writers, mix=args.mix, rate=args.rate)
     mea = measure.Measurer(fetch, gen.written_at)
+    if args.seed_rows:
+        # Continue seq numbering above the baseline; let updates/deletes hit the big
+        # existing set; make the poller ignore the baseline (it isn't timed).
+        gen.seq = args.seed_rows
+        gen.live_ids = list(range(1, args.seed_rows + 1))
+        mea.last_seq = args.seed_rows
+
+    # For real CDC tools, wait until the baseline has fully landed in MSSQL before
+    # timing the incremental load — so we measure "changes against a large EXISTING
+    # table", not changes stuck behind the baseline's replication backlog.
+    if args.seed_rows and args.tool != "selftest":
+        print(f"waiting for the {args.seed_rows}-row baseline to replicate to MSSQL...")
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            c = _target_count(target)
+            if c >= args.seed_rows:
+                print(f"  baseline replicated ({c} rows present in target).")
+                break
+            time.sleep(3)
+        else:
+            print(f"  WARNING: baseline not fully replicated (target has {_target_count(target)}).")
 
     stop = threading.Event()
 
@@ -123,12 +183,15 @@ def main() -> int:
     mea.drain(time.time() + args.grace)   # catch the tail on the main thread
 
     lat = [ms for _, ms in mea.samples]
+    # generated counts only the TIMED inserts (seq above the baseline), matching what
+    # the poller measures — so completeness is timed-arrived / timed-generated.
     summary = metrics.summarize(
-        lat, generated=gen.seq, arrived=len(mea.samples), duration_s=load_duration
+        lat, generated=gen.seq - args.seed_rows, arrived=len(mea.samples), duration_s=load_duration
     )
     summary["tool"] = args.tool
     summary["rate"] = args.rate
     summary["mix"] = args.mix
+    summary["seed_rows"] = args.seed_rows
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     outdir = pathlib.Path("results")
